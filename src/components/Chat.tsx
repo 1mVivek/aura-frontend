@@ -40,22 +40,39 @@ export default function Chat() {
     abortRef.current = new AbortController();
 
     try {
-      const res = await fetch(import.meta.env.VITE_API_URL as string, {
+      const apiUrl = import.meta.env.VITE_API_URL;
+      const apiKey = import.meta.env.VITE_API_KEY;
+
+      if (!apiUrl) {
+        throw new Error("API URL is not configured. Set VITE_API_URL.");
+      }
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream"
+      };
+
+      if (apiKey) {
+        headers["x-api-key"] = apiKey;
+      }
+
+      const res = await fetch(apiUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": import.meta.env.VITE_API_KEY as string
-        },
+        headers,
         body: JSON.stringify({ message: userMsg }),
         signal: abortRef.current.signal
       });
 
       if (!res.ok || !res.body) {
-        throw new Error("Invalid response");
+        throw new Error(`Server error: ${res.status} ${res.statusText}`);
       }
+
+      const contentType = res.headers.get("content-type") || "";
+      const isSSE = contentType.includes("text/event-stream");
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder("utf-8");
+      let buffer = "";
 
       while (true) {
         const { value, done } = await reader.read();
@@ -64,17 +81,43 @@ export default function Chat() {
         if (value) {
           const chunk = decoder.decode(value, { stream: true });
 
-          setMessages(prev => {
-            const updated = [...prev];
-            const assistantIndex = updated.findIndex(m => m.id === assistantId);
-            if (assistantIndex !== -1) {
-              updated[assistantIndex] = {
-                ...updated[assistantIndex],
-                content: updated[assistantIndex].content + chunk
-              };
+          let text = "";
+
+          if (isSSE) {
+            buffer += chunk;
+            const lines = buffer.split("\n");
+            // Keep the last incomplete line in the buffer
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed.startsWith("data: ")) {
+                const data = trimmed.slice(6);
+                if (data === "[DONE]") break;
+                text += data;
+              } else if (trimmed.startsWith("data:")) {
+                const data = trimmed.slice(5);
+                if (data === "[DONE]") break;
+                text += data;
+              }
             }
-            return updated;
-          });
+          } else {
+            text = chunk;
+          }
+
+          if (text) {
+            setMessages(prev => {
+              const updated = [...prev];
+              const assistantIndex = updated.findIndex(m => m.id === assistantId);
+              if (assistantIndex !== -1) {
+                updated[assistantIndex] = {
+                  ...updated[assistantIndex],
+                  content: updated[assistantIndex].content + text
+                };
+              }
+              return updated;
+            });
+          }
         }
       }
     } catch (err) {
@@ -84,8 +127,8 @@ export default function Chat() {
       const errorMessage = abortRef.current?.signal.aborted
         ? "⚠️ Request cancelled."
         : err instanceof TypeError
-        ? "⚠️ Network error. Please check your connection."
-        : "⚠️ Error getting response.";
+        ? "⚠️ Network error. Please check your connection or CORS settings."
+        : `⚠️ ${err instanceof Error ? err.message : "Error getting response."}`;
 
       setMessages(prev => {
         const updated = [...prev];

@@ -73,8 +73,9 @@ export default function Chat() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
+      let streamDone = false;
 
-      while (true) {
+      while (!streamDone) {
         const { value, done } = await reader.read();
         if (done) break;
 
@@ -90,16 +91,10 @@ export default function Chat() {
             buffer = lines.pop() || "";
 
             for (const line of lines) {
-              const trimmed = line.trim();
-              if (trimmed.startsWith("data: ")) {
-                const data = trimmed.slice(6);
-                if (data === "[DONE]") break;
-                text += data;
-              } else if (trimmed.startsWith("data:")) {
-                const data = trimmed.slice(5);
-                if (data === "[DONE]") break;
-                text += data;
-              }
+              const data = line.trim().replace(/^data:\s?/, "");
+              if (data === line.trim()) continue; // not a data line
+              if (data === "[DONE]") { streamDone = true; break; }
+              text += data;
             }
           } else {
             text = chunk;
